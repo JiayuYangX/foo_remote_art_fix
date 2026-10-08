@@ -1,0 +1,21 @@
+# 构建产物 / 中间文件（由 build.ps1 或 MSBuild 生成，不需要提交）
+/Win32/
+/x64/
+/staging/
+/dist/
+/.vs/
+*.user
+*.aps
+
+# 仓库内嵌 SDK 的编译产物（SDK 源码要提交，编译产物不提交）
+/sdk/**/Release/
+/sdk/**/Debug/
+/sdk/**/x64/
+/sdk/**/Win32/
+/sdk/**/.vs/
+/sdk/**/*.pch
+/sdk/**/*.obj
+/sdk/**/*.tlog
+/sdk/**/*.iobj
+/sdk/**/*.ipdb
+/sdk/**/*.log
