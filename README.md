@@ -1,15 +1,11 @@
-# foo_remote_art_fix
+# Remote Art Fix
 
 A foobar2000 component that makes embedded artwork of remote (WebDAV / network)
 tracks available to themes and components that rely on the core artwork pipelines.
 
-一个让“远程（WebDAV / 网络）曲目的内嵌封面”能够被核心封面管线正常读取的 foobar2000 组件。
-
 ---
 
-## English
-
-### The problem
+## The problem
 
 For remote files (`filesystem::is_remote() == true`) the core artwork pipelines
 (`album_art_manager_v2`, `imageLoader`'s `trackimage://` protocol) deliberately
@@ -31,7 +27,7 @@ Measured behavior for the same remote FLAC file:
 | `imageLoader` `trackimage://...` | fails instantly | succeeds |
 | `album_art_manager_v2::open().query(front)` on a local file | works as usual | unchanged |
 
-### What this component does
+## What this component does
 
 The SDK provides an `album_art_fallback` entry point: the last source the
 artwork manager consults when every other source (embedded, external folder
@@ -47,7 +43,7 @@ images, other fallbacks) returned nothing. This component registers one:
 Local files are explicitly ignored - the core handles them correctly, and this
 component never changes their behavior.
 
-### Install
+## Install
 
 Copy `foo_remote_art_fix.dll` into the foobar2000 `user-components` folder and
 restart foobar2000:
@@ -57,7 +53,7 @@ restart foobar2000:
 
 No configuration needed.
 
-### Notes and caveats
+## Notes and caveats
 
 * The first artwork request per album performs a real network read (about
   0.7-1.5 s for an embedded cover in our tests). UI components that request
@@ -68,7 +64,7 @@ No configuration needed.
 * This component is a workaround for a deliberate core behavior, not an
   official fix.
 
-### Building
+## Building
 
 Requirements: Visual Studio with the "Desktop development with C++" workload
 (MSVC v143 toolset + Windows SDK). The foobar2000 SDK (2026-10-01 release)
@@ -103,9 +99,11 @@ binaries without requiring the SDK.
 
 ---
 
-## 中文
+> # 中文
 
-### 问题背景
+一个让“远程（WebDAV / 网络）曲目的内嵌封面”能够被核心封面管线正常读取的 foobar2000 组件。
+
+## 问题背景
 
 对于远程文件（`filesystem::is_remote() == true`），核心封面管线
 （`album_art_manager_v2`、imageLoader 的 `trackimage://`）**故意不读取内嵌封面**。
@@ -123,7 +121,7 @@ binaries without requiring the SDK.
 | `imageLoader` `trackimage://...` | 立即失败 | 成功 |
 | 同上调用（本地文件） | 正常 | 不受影响 |
 
-### 组件原理
+## 组件原理
 
 SDK 提供了 `album_art_fallback` 入口：当封面管理器把所有来源（内嵌、外部图片、
 其他 fallback）都问完仍一无所获时，才会询问的最后一环。本组件注册了这样一个实现：
@@ -135,7 +133,7 @@ SDK 提供了 `album_art_fallback` 入口：当封面管理器把所有来源（
 
 本地文件被显式排除：核心对本地文件处理得很好，本组件不改变其任何行为。
 
-### 安装
+## 安装
 
 把 `foo_remote_art_fix.dll` 复制到 foobar2000 的 `user-components` 目录后重启：
 
@@ -144,14 +142,14 @@ SDK 提供了 `album_art_fallback` 入口：当封面管理器把所有来源（
 
 无需任何配置。
 
-### 注意事项
+## 注意事项
 
 * 每个专辑第一次请求封面会真实走网络（测试中内嵌封面约 0.7–1.5 秒）；
   如果某个 UI 组件在主线程同步请求封面，会阻塞同样长的时间——建议使用异步请求。
 * 只处理内嵌封面；同目录图片（`cover.jpg` 等）仍由核心自身的外部来源负责。
 * 本组件是对核心既定行为的绕行方案，并非官方修复。
 
-### 构建
+## 构建
 
 需要：Visual Studio（安装时勾选“使用 C++ 的桌面开发”，含 MSVC v143 与
 Windows SDK）。foobar2000 SDK（2026-10-01 版）已随仓库放在 `sdk\` 下
