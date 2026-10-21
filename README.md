@@ -1,31 +1,39 @@
 # Remote Art Fix
 
 A foobar2000 component that lets the core artwork manager return the **embedded**
-artwork of remote (WebDAV / network) tracks — **only when foobar2000 itself can
-read that artwork** (the cover is visible in the track's Properties dialog;
-confirmed with WebDAV). It does **not** fetch artwork from any online source or
-artwork service.
+artwork of remote tracks. For filesystem-backed sources (e.g. WebDAV) it works
+when foobar2000 itself can read the artwork (the cover is visible in the track's
+Properties dialog). For plain HTTP(S) direct links it works when the server
+supports Range requests. It does **not** download artwork from online services or
+databases — only the artwork embedded in the media file itself.
 
 ---
 
 ## Precondition
 
-The cover must be readable by foobar2000 itself. The practical test: open the
-track's Properties dialog. If the cover is shown there, this component can make
-the artwork manager return it. If it is not shown (no embedded artwork, or the
-format/extractor cannot read it), this component cannot provide one either.
+* **Filesystem-backed sources (WebDAV, etc.)**: the cover must be readable by
+  foobar2000 itself. The practical test: open the track's Properties dialog. If
+  the cover is shown there, this component can make the artwork manager return
+  it.
+* **Plain HTTP(S) direct links**: the URL must point to a complete media file
+  with embedded artwork, and the server must support HTTP Range requests (most
+  CDNs / object storage do). The Properties dialog test does not apply to plain
+  URLs.
+* In both cases, if the format has no embedded artwork or the core extractor
+  cannot read it, this component cannot provide one either.
 
 ## Scope and confirmed sources
 
-* Confirmed working: WebDAV (native in foobar2000 2.x; tested with 2.25.8).
-* The component adds neither format nor source support. It only works when
-  foobar2000's own extractor can read the embedded artwork over that source —
-  the practical test is the standard track Properties dialog.
+* WebDAV: confirmed (native in foobar2000 2.x; tested with 2.25.8).
+* Plain HTTP(S) direct links: supported since 1.1.0 when the server supports
+  Range requests; servers without Range support are not handled.
+* Any other source that exposes a seekable filesystem is handled automatically
+  by the filesystem path (no additional code needed).
 * Local network shares (mapped drives, UNC paths) are treated as local by the
   core (`is_remote()` may return false for mounted shares); the core's normal
   artwork path already applies there, so this component is not needed.
-* Other remote sources (UPnP/DLNA, HTTP(S) streams, cloud plugins, ...) are not
-  covered by the core extractor and have not been tested.
+* Sources that are not exposed as seekable files (UPnP/DLNA, plugin-specific
+  streams, live radio) are not supported.
 
 ## The problem
 
@@ -41,9 +49,9 @@ using those pipelines show no covers at all - even though the artwork is embedde
 in the files and the file properties dialog (which reads artwork through the
 explicit extractor path) displays it fine.
 
-That dialog is the reference for this component: it uses the same explicit
-extractor path. If it shows no cover, the embedded artwork is not readable and
-this component cannot provide one either.
+For filesystem-backed sources, that dialog is the reference: it uses the same
+explicit extractor path. If it shows no cover, the embedded artwork is not
+readable and this component cannot provide one either.
 
 Measured behavior for the same remote FLAC file:
 
@@ -64,11 +72,15 @@ artwork manager consults when every other source (embedded, external folder
 images, other fallbacks) returned nothing. This component registers one:
 
 1. the artwork manager asks it for the artwork of a remote track;
-2. it opens the track through the regular format extractors
-   (`album_art_extractor::g_open()`), i.e. the exact operation the core skips
-   for remote files, and extracts the requested artwork type;
-3. already extracted entries are cached in the returned instance, so the
-   forthcoming `query()` does not hit the network a second time.
+2. for filesystem-backed sources (WebDAV, etc.) it opens the track through the
+   regular format extractors (`album_art_extractor::g_open()`), i.e. the exact
+   operation the core skips for remote files;
+3. for plain HTTP(S) URLs it opens the link with the SDK's HTTP client (Range
+   requests provide random access), determines the container format (URL
+   extension / Content-Type / magic bytes) and passes the open file to the same
+   format extractor via `p_filehint`;
+4. the extractor instance is opened only once per query and extracted entries
+   are cached in the returned instance.
 
 This is not a remote artwork downloader: it performs the same embedded-artwork
 extraction the Properties dialog uses and exposes the result through the
@@ -90,16 +102,20 @@ No configuration needed.
 ## Notes and caveats
 
 * The first artwork request per album reads the embedded artwork from the
-  remote file (about 0.7-1.5 s in our tests). UI components that request
-  artwork synchronously on the main thread will block for that long - prefer
-  asynchronous artwork requests (the norm).
+  remote file (about 0.7-1.5 s in our tests). Read operations may issue
+  multiple HTTP Range requests (say, one for the header, one for the tail).
+  UI components that request artwork synchronously on the main thread will
+  block for that long - prefer asynchronous artwork requests (the norm).
 * Only embedded artwork is handled; folder images (`cover.jpg`, etc.) remain
   the core's responsibility. Which formats are supported is decided by
   foobar2000 itself (e.g. FLAC, MP3, MP4/M4A, Ogg Vorbis/Opus, WavPack); the
   authoritative test remains the Properties dialog.
-* Not an online artwork fetcher: it only serves embedded artwork that
-  foobar2000's own extractor can read. Remote tracks whose Properties dialog
-  shows no cover cannot be helped by this component.
+* Plain HTTP(S) direct links require server-side Range support. Live streams,
+  servers without Range support, and links requiring authentication headers
+  are not supported.
+* Not an online artwork fetcher: it only serves the artwork embedded in the
+  media file (readable by foobar2000's own extractor). It does not query any
+  artwork database, and cannot produce art for files that do not contain it.
 * This component is a workaround for a deliberate core behavior, not an
   official fix.
 
@@ -140,18 +156,21 @@ binaries without requiring the SDK.
 
 > # 中文
 
-一个让核心封面管理器能正确返回远程（WebDAV / 网络）曲目**内嵌封面**的 foobar2000 组件——**前提是 foobar2000 自身能读取该封面**（曲目“属性”面板里能看见封面；WebDAV 已确认）。它不会从网络或任何在线封面源抓取封面。
+一个让核心封面管理器能正确返回远程曲目**内嵌封面**的 foobar2000 组件。对文件系统型来源（如 WebDAV），前提是 foobar2000 自身能读取该封面（曲目“属性”面板里能看见封面）；对普通 HTTP(S) 直链，前提是服务器支持 Range 请求。它不会从在线封面服务或数据库下载封面，只读取媒体文件本身的内嵌图。
 
 ## 前提
 
-封面必须能被 foobar2000 自身读取。判断方法：打开曲目的“属性”面板——那里能看到封面，本组件就能让封面管理器正确返回；那里看不到（没有内嵌封面，或格式/读取器不支持），本组件也无法提供。
+* **文件系统型来源（WebDAV 等）**：封面必须能被 foobar2000 自身读取。判断方法：打开曲目的“属性”面板——那里能看到封面，本组件就能让封面管理器正确返回。
+* **普通 HTTP(S) 直链**：URL 必须指向完整的媒体文件（含内嵌封面），且服务器支持 HTTP Range 请求（多数 CDN/对象存储都支持）；“属性”面板测试不适用于裸 URL。
+* 两种情况都一样：文件没有内嵌封面、或核心提取器读不了该格式时，本组件无法提供封面。
 
 ## 适用范围与已确认来源
 
-* 已确认可用：WebDAV（foobar2000 2.x 原生支持；在 2.25.8 上实测）。
-* 组件本身不增加任何格式或来源支持，只适用于“foobar2000 自带提取器能通过该来源读到内嵌封面”的情况——判断方法就是标准的曲目“属性”面板。
+* WebDAV：已确认（foobar2000 2.x 原生支持；在 2.25.8 上实测）。
+* 普通 HTTP(S) 直链：1.1.0 起支持；要求服务器支持 Range 请求，不支持 Range 的服务器无法处理。
+* 其他以“可 seek 文件系统”形式出现的来源会自动走文件系统通道，无需额外代码。
 * 局域网共享（映射盘符、UNC 路径）被核心当作本地文件处理（挂载共享的 `is_remote()` 可能返回 false），核心的正常封面路径本就适用，不需要本组件。
-* 其他网络来源（UPnP/DLNA、HTTP(S) 流、网盘插件等）不在核心提取器覆盖范围内，尚未测试。
+* 不是可 seek 文件的来源（UPnP/DLNA、插件专用的流、网络电台直播）不支持。
 
 ## 问题背景
 
@@ -163,7 +182,7 @@ binaries without requiring the SDK.
 副作用是：在 WebDAV 等网络音源上，主题和其它依赖该管线的组件都显示不出封面，
 即使封面就嵌在文件里、文件属性对话框（走显式提取路径）能正常显示。
 
-这里的“属性”面板就是本组件的判据：它走的是同一条显式提取路径。如果属性面板里看不到封面，说明内嵌封面不可读，本组件也无能为力。
+对文件系统型来源，这里的“属性”面板就是本组件的判据：它走的是同一条显式提取路径。如果属性面板里看不到封面，说明内嵌封面不可读，本组件也无能为力。
 
 同一个远程 FLAC 文件的实测对比：
 
@@ -181,11 +200,11 @@ SDK 提供了 `album_art_fallback` 入口：当封面管理器把所有来源（
 其他 fallback）都问完仍一无所获时，才会询问的最后一环。本组件注册了这样一个实现：
 
 1. 管理器来问某远程曲目的封面；
-2. 它用常规格式提取器（`album_art_extractor::g_open()`）打开该文件——也就是
-   核心对远程文件跳过的那一步操作——并提取请求的封面类型；
-3. 已提取的条目会缓存进返回的实例，随后真正的 `query()` 不会二次下载。
+2. 文件系统型来源（WebDAV 等）：用常规格式提取器（`album_art_extractor::g_open()`）打开该文件——也就是核心对远程文件跳过的那一步操作；
+3. 普通 HTTP(S) 直链：先用 SDK 的 HTTP 客户端打开链接（靠 Range 请求获得随机访问），再根据 URL 扩展名 / Content-Type / 文件头魔数判断容器格式，通过 `p_filehint` 把已打开的文件交给同一个格式提取器；
+4. 每个实例只打开一次提取器，已提取的条目会缓存，随后真正的 `query()` 不会二次下载。
 
-本组件不是远程封面下载器：它执行的是与“属性”面板相同的内嵌封面提取，并通过 `album_art_fallback` 把结果交给封面管理器；不访问任何在线封面服务。
+本组件不是远程封面下载器：它执行的是与“属性”面板相同的内嵌封面提取，并通过 `album_art_fallback` 把结果交给封面管理器；不访问任何在线封面服务或数据库。
 
 本地文件被显式排除：核心对本地文件处理得很好，本组件不改变其任何行为。
 
@@ -201,9 +220,10 @@ SDK 提供了 `album_art_fallback` 入口：当封面管理器把所有来源（
 ## 注意事项
 
 * 每个专辑第一次请求封面会从远程文件读取内嵌封面（测试中约 0.7–1.5 秒）；
-  如果某个 UI 组件在主线程同步请求封面，会阻塞同样长的时间——建议使用异步请求。
+  读取过程可能发出多次 HTTP Range 请求（例如头部一次、尾部一次）。如果某个 UI 组件在主线程同步请求封面，会阻塞同样长的时间——建议使用异步请求。
 * 只处理内嵌封面；同目录图片（`cover.jpg` 等）仍由核心自身的外部来源负责。支持哪些格式由 foobar2000 自身决定（如 FLAC、MP3、MP4/M4A、Ogg Vorbis/Opus、WavPack 等），最终仍以属性面板为准。
-* 不是在线封面获取器：只对 foobar2000 自身能读取的内嵌封面生效（以属性面板可见为准）；属性面板看不到封面的远程曲目，本组件无法提供。
+* 普通 HTTP(S) 直链要求服务器支持 Range 请求；直播流、不支持 Range 的服务器、需要认证请求头的链接不支持。
+* 不是在线封面获取器：只提供媒体文件自带、且 foobar2000 提取器能读取的内嵌封面；不查询任何封面数据库，也无法为本身没有封面的文件生成封面。
 * 本组件是对核心既定行为的绕行方案，并非官方修复。
 
 ## 构建
