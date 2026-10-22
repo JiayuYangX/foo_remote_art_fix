@@ -27,11 +27,13 @@
 #include <SDK/filesystem.h>
 #include <SDK/http_client.h>
 #include <SDK/component.h>
+#include <SDK/input.h>
 #include <cstring>
+#include <vector>
 
 DECLARE_COMPONENT_VERSION(
     "Remote Art Fix",
-    "1.1.0",
+    "1.1.1",
     "为依赖核心封面管线的主题/组件提取远程（WebDAV / HTTP(S)）曲目的内嵌封面。"
 );
 VALIDATE_COMPONENT_FILENAME("foo_remote_art_fix.dll");
@@ -177,6 +179,85 @@ file::ptr open_http(const char* url, abort_callback& abort) {
     return request->run(url, abort);
 }
 
+struct found_art_t {
+    GUID id;
+    album_art_data_ptr data;
+};
+
+//! 打开封面实例并取出请求的封面类型。
+//! 标准 g_open 取不到时，回退为直接调用已启用输入（不经过输入包装层）。
+album_art_extractor_instance_ptr open_art(file::ptr hint, const char* path,
+                                           pfc::list_base_const_t<GUID> const& ids,
+                                           abort_callback& abort,
+                                           std::vector<found_art_t>& found)
+{
+    auto probe = [&](album_art_extractor_instance_ptr const& inst) {
+        bool got = false;
+        for (t_size i = 0; i < ids.get_count(); ++i) {
+            try {
+                album_art_data_ptr data = inst->query(ids[i], abort);
+                if (data.is_valid()) {
+                    found_art_t f;
+                    f.id = ids[i];
+                    f.data = data;
+                    found.push_back(f);
+                    got = true;
+                }
+            } catch (exception_aborted const&) {
+                throw;
+            } catch (...) {
+            }
+        }
+        return got || ids.get_count() == 0;
+    };
+
+    try {
+        auto inst = album_art_extractor::g_open(hint, path, abort);
+        if (probe(inst)) return inst;
+    } catch (exception_aborted const&) {
+        throw;
+    } catch (...) {
+    }
+
+    pfc::list_t<input_entry::ptr> entries;
+    input_manager_v3::ptr mgr;
+    if (fb2k::std_api_try_get(mgr)) {
+        mgr->get_enabled_inputs(entries);
+    } else {
+        service_enum_t<input_entry> e;
+        input_entry::ptr p;
+        while (e.next(p)) entries.add_item(p);
+    }
+
+    const char* ext = pfc::string_extension(path);
+    for (t_size i = 0; i < entries.get_count(); ++i) {
+        input_entry::ptr entry = entries[i];
+        if (!entry->is_our_path(path, ext)) continue;
+
+        // 同一个 hint 会被多个输入复用，每次尝试前都要回到开头。
+        if (hint.is_valid()) {
+            if (!hint->can_seek()) break;
+            try {
+                hint->seek(0, abort);
+            } catch (exception_aborted const&) {
+                throw;
+            } catch (...) {
+                break;
+            }
+        }
+
+        try {
+            album_art_extractor_instance_ptr inst;
+            inst ^= entry->open(album_art_extractor_instance::class_guid, hint, path, nullptr, abort);
+            if (inst.is_valid() && probe(inst)) return inst;
+        } catch (exception_aborted const&) {
+            throw;
+        } catch (...) {
+        }
+    }
+    return album_art_extractor_instance_ptr();
+}
+
 //! 单个远程曲目的封面实例。内部只打开一次提取器；已查询的条目会缓存。
 class remote_art_instance : public album_art_extractor_instance_v2 {
 public:
@@ -196,6 +277,10 @@ public:
         return new service_impl_t<album_art_path_list_impl>(m_path.c_str());
     }
 
+    void cache(const GUID& id, album_art_data_ptr data) {
+        m_entries.set(id, data);
+    }
+
 private:
     pfc::string8 m_path;
     album_art_extractor_instance_ptr m_inner;
@@ -211,7 +296,6 @@ public:
         pfc::list_base_const_t<GUID> const& art_ids,
         abort_callback& abort) override
     {
-        (void)art_ids;
         if (items.get_count() == 0) throw exception_album_art_not_found();
 
         const char* path = items[0]->get_path();
@@ -242,8 +326,13 @@ public:
 
         if (fs_like) {
             try {
-                auto inner = album_art_extractor::g_open(nullptr, path, abort);
-                return new service_impl_t<remote_art_instance>(path, inner, file::ptr());
+                std::vector<found_art_t> found;
+                auto inner = open_art(file::ptr(), path, art_ids, abort, found);
+                if (inner.is_valid()) {
+                    auto* inst = new service_impl_t<remote_art_instance>(path, inner, file::ptr());
+                    for (auto& f : found) inst->cache(f.id, f.data);
+                    return inst;
+                }
             } catch (exception_aborted const&) {
                 throw;
             } catch (pfc::exception const&) {
@@ -251,6 +340,7 @@ public:
                 // 继续尝试下面的 http_client 通道。
                 if (!http) throw exception_album_art_not_found();
             }
+            if (!http) throw exception_album_art_not_found();
         }
 
         if (!http) throw exception_album_art_not_found();
@@ -260,8 +350,13 @@ public:
             pfc::string8 ext = resolve_extension(path, source, abort);
             if (ext.is_empty()) throw exception_album_art_not_found();
 
-            auto inner = album_art_extractor::g_open(source, synthetic_path(ext).c_str(), abort);
-            return new service_impl_t<remote_art_instance>(path, inner, source);
+            std::vector<found_art_t> found;
+            auto inner = open_art(source, synthetic_path(ext).c_str(), art_ids, abort, found);
+            if (!inner.is_valid()) throw exception_album_art_not_found();
+
+            auto* inst = new service_impl_t<remote_art_instance>(path, inner, source);
+            for (auto& f : found) inst->cache(f.id, f.data);
+            return inst;
         } catch (exception_aborted const&) {
             throw;
         } catch (pfc::exception const&) {

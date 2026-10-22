@@ -38,12 +38,36 @@ The test file is a remote FLAC whose embedded artwork is readable by the core (v
 
 ## What this component does
 
-The SDK provides an `album_art_fallback` entry point: the last source the artwork manager consults when every other source (embedded, external folder images, other fallbacks) returned nothing. This component registers one:
+The SDK provides an `album_art_fallback` entry point: the last source the artwork manager consults when every other source (embedded, external folder images, other fallbacks) returned nothing. This component registers one. It does not add a new artwork source: it re-opens the file itself through foobar2000's own extractors and exposes the result to the artwork manager.
 
-1. the artwork manager asks it for the artwork of a remote track;
-2. for filesystem-backed sources (WebDAV, etc.) it opens the track through the regular format extractors (`album_art_extractor::g_open()`), i.e. the exact operation the core skips for remote files;
-3. for plain HTTP(S) URLs it opens the link with the SDK's HTTP client (Range requests provide random access), determines the container format (URL extension / Content-Type / magic bytes) and passes the open file to the same format extractor via `p_filehint`;
-4. the extractor instance is opened only once per query and extracted entries are cached in the returned instance.
+### Fallback order
+
+The component runs only after the artwork manager has exhausted its normal sources. It then works in two stages:
+
+1. **Standard extraction.** It first calls the regular album art extractor for the path (`album_art_extractor::g_open()`), the same extraction path the Properties dialog uses. This respects the normal input selection and any enabled tag/art filters.
+2. **Direct input fallback.** If the standard extraction returns none of the requested artwork types, the component enumerates the enabled inputs in the user's decoder priority, selects those that claim the path, and calls their album art interface directly. This bypasses input wrappers and tag/art filters installed by other components. The first input that actually returns artwork for a requested type wins.
+
+Artwork types obtained by the fallback are cached in the returned instance; later queries for those types are served from the cache. Other artwork types are requested from the chosen input. The same two stages run for plain HTTP(S) direct links, using the `http_client` file; the file is rewound to the beginning before each input attempt and must support Range requests.
+
+The direct fallback is generic: it does not target any specific component. It exists because some components wrap inputs or filter tag/art reads; asking the enabled inputs directly avoids that interception.
+
+### Conditions
+
+| Condition | Behavior |
+|---|---|
+| Local file | Not handled - the core already reads it normally. |
+| Remote or unrecognized path | Handled. |
+| Standard extraction returns artwork | Used; the direct fallback is not attempted. |
+| Standard extraction returns no artwork | Direct input fallback runs. |
+| No enabled input returns artwork | Reported as "not found". |
+| File has no embedded artwork | Reported as "not found". |
+| HTTP(S) without Range support | Not supported. |
+
+### Transports
+
+- **Filesystem-backed sources** (WebDAV, etc.): the track is opened through the regular format extractors, i.e. the operation the core skips for remote files.
+- **Plain HTTP(S) direct links**: the link is opened with the SDK's HTTP client (Range requests provide random access); the container format is determined from the URL extension / Content-Type / magic bytes, and the open file is passed to the format extractor via `p_filehint`.
+- The extractor instance is opened only once per query, and extracted entries are cached in the returned instance.
 
 This is not a remote artwork downloader: it performs the same embedded-artwork extraction the Properties dialog uses and exposes the result through the `album_art_fallback` mechanism; it never contacts online artwork services.
 
@@ -64,6 +88,7 @@ No configuration needed.
 * Only embedded artwork is handled; folder images (`cover.jpg`, etc.) remain the core's responsibility. Which formats are supported is decided by foobar2000 itself (e.g. FLAC, MP3, MP4/M4A, Ogg Vorbis/Opus, WavPack); the authoritative test remains the Properties dialog.
 * Plain HTTP(S) direct links require server-side Range support. Live streams, servers without Range support, and links requiring authentication headers are not supported.
 * Not an online artwork fetcher: it only serves the artwork embedded in the media file (readable by foobar2000's own extractor). It does not query any artwork database, and cannot produce art for files that do not contain it.
+* Third-party input wrappers/filters (e.g. foo_external_tags) can suppress artwork on the standard path; the direct fallback above reads the artwork through the enabled inputs. If the Properties dialog also shows no cover, that component is filtering the path too; disabling its art handling (foo_external_tags: "Enable art support in external tags") restores the core behavior.
 * This component is a workaround for a deliberate core behavior, not an official fix.
 
 ## Building
@@ -123,12 +148,36 @@ Alternatively run `.\build.ps1` in PowerShell: it builds both architectures and 
 
 ## 组件原理
 
-SDK 提供了 `album_art_fallback` 入口：当封面管理器把所有来源（内嵌、外部图片、其他 fallback）都问完仍一无所获时，才会询问的最后一环。本组件注册了这样一个实现：
+SDK 提供了 `album_art_fallback` 入口：当封面管理器把所有来源（内嵌、外部图片、其他 fallback）都问完仍一无所获时，才会询问的最后一环。本组件注册了这样一个实现；它不新增图源，只是重新打开曲目文件、走 foobar2000 自带的提取器，再把结果交给封面管理器。
 
-1. 管理器来问某远程曲目的封面；
-2. 文件系统型来源（WebDAV 等）：用常规格式提取器（`album_art_extractor::g_open()`）打开该文件——也就是核心对远程文件跳过的那一步操作；
-3. 普通 HTTP(S) 直链：先用 SDK 的 HTTP 客户端打开链接（靠 Range 请求获得随机访问），再根据 URL 扩展名 / Content-Type / 文件头魔数判断容器格式，通过 `p_filehint` 把已打开的文件交给同一个格式提取器；
-4. 每个实例只打开一次提取器，已提取的条目会缓存，随后真正的 `query()` 不会二次下载。
+### 回退顺序
+
+只有封面管理器用尽常规来源后，本组件才会运行，分两步：
+
+1. **标准提取**：先对该路径调用常规封面提取器（`album_art_extractor::g_open()`），也就是“属性”面板使用的同一条提取路径。这一步遵循正常的输入选择以及已启用的标签/封面过滤器。
+2. **直接输入回退**：如果标准提取没有返回请求的任何封面类型，组件会按用户的解码器优先级枚举已启用的输入，筛出认领该路径的输入，直接调用它们的封面接口。这会绕过其它组件安装的输入包装和标签/封面过滤器；第一个真正返回请求封面的输入胜出。
+
+回退得到的封面类型会缓存在返回的实例中，后续同一类型的查询直接命中；其它类型向选中的输入请求。普通 HTTP(S) 直链同样走这两步，使用 `http_client` 打开的文件；每次尝试输入前都会把文件指针回到开头，且要求服务器支持 Range 请求。
+
+直接回退是通用的，不针对任何特定组件。它存在的原因是有组件会包装输入或过滤标签/封面读取；直接询问已启用的输入可以绕开这层拦截。
+
+### 条件
+
+| 条件 | 行为 |
+|---|---|
+| 本地文件 | 不处理——核心本来就能正常读取。 |
+| 远程或未识别路径 | 处理。 |
+| 标准提取返回封面 | 直接使用，不触发直接回退。 |
+| 标准提取没有返回封面 | 执行直接输入回退。 |
+| 所有已启用输入都没有封面 | 返回“未找到”。 |
+| 文件本身没有内嵌封面 | 返回“未找到”。 |
+| HTTP(S) 不支持 Range | 不支持。 |
+
+### 传输方式
+
+- **文件系统型来源**（WebDAV 等）：通过常规格式提取器打开曲目——也就是核心对远程文件跳过的那一步操作。
+- **普通 HTTP(S) 直链**：先用 SDK 的 HTTP 客户端打开链接（靠 Range 请求获得随机访问），再根据 URL 扩展名 / Content-Type / 文件头魔数判断容器格式，通过 `p_filehint` 把已打开的文件交给格式提取器。
+- 每个实例只打开一次提取器，已提取的条目会缓存。
 
 本组件不是远程封面下载器：它执行的是与“属性”面板相同的内嵌封面提取，并通过 `album_art_fallback` 把结果交给封面管理器；不访问任何在线封面服务或数据库。
 
@@ -149,6 +198,7 @@ SDK 提供了 `album_art_fallback` 入口：当封面管理器把所有来源（
 * 只处理内嵌封面；同目录图片（`cover.jpg` 等）仍由核心自身的外部来源负责。支持哪些格式由 foobar2000 自身决定（如 FLAC、MP3、MP4/M4A、Ogg Vorbis/Opus、WavPack 等），最终仍以属性面板为准。
 * 普通 HTTP(S) 直链要求服务器支持 Range 请求；直播流、不支持 Range 的服务器、需要认证请求头的链接不支持。
 * 不是在线封面获取器：只提供媒体文件自带、且 foobar2000 提取器能读取的内嵌封面；不查询任何封面数据库，也无法为本身没有封面的文件生成封面。
+* 与第三方输入包装/过滤器（如 foo_external_tags）共存：它们可能拦截标准路径的封面；上面的直接回退会通过已启用输入读取封面。如果“属性”面板也看不到封面，说明该组件同样拦截了那条路径；关掉它的封面支持（foo_external_tags：“Enable art support in external tags”）即可恢复核心行为。
 * 本组件是对核心既定行为的绕行方案，并非官方修复。
 
 ## 构建
